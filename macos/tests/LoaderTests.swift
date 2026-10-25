@@ -1,3 +1,4 @@
+import Foundation
 @main struct LoaderTest {static func main() async throws {
 let e=Engine(root:URL(fileURLWithPath:"/private/tmp/glasscraft-loader-tests"))
 for kind in ["Forge","NeoForge","Fabric","Quilt"] {

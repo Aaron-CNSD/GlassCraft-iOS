@@ -1,18 +1,37 @@
 import SwiftUI
 import CryptoKit
 import UniformTypeIdentifiers
+import ImageIO
 
 struct LaunchError: LocalizedError { var message: String; var errorDescription: String? { message } }
 actor Engine {
     let root: URL
     init(root: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("GlassCraft")) { self.root = root }
     var running: Process?
+    let session: URLSession = {let config=URLSessionConfiguration.default;config.timeoutIntervalForRequest=45;config.timeoutIntervalForResource=240;return URLSession(configuration:config)}()
+    func stop() {if let p=running,p.isRunning{p.terminate()}}
+    func execute(_ process:Process) async throws -> Int32 {
+        try Task.checkCancellation()
+        return try await withCheckedThrowingContinuation { continuation in
+            process.terminationHandler={p in continuation.resume(returning:p.terminationStatus)}
+            do{try process.run()}catch{process.terminationHandler=nil;continuation.resume(throwing:error)}
+        }
+    }
     func folder(_ name: String) throws -> URL { let p=root.appendingPathComponent(name); try FileManager.default.createDirectory(at:p,withIntermediateDirectories:true); return p }
     func fetch(_ url: String) async throws -> Data {
         guard let u=URL(string:url),u.scheme == "https" else { throw LaunchError(message:"无效下载地址") }
         var req=URLRequest(url:u); req.timeoutInterval=90; req.setValue("GlassCraft/0.2 (Aaron-CNSD/GlassCraft-iOS)",forHTTPHeaderField:"User-Agent")
-        let (data,res)=try await URLSession.shared.data(for:req)
-        guard let r=res as? HTTPURLResponse,(200...299).contains(r.statusCode) else { throw LaunchError(message:"下载失败：\(url)") }; return data
+        for attempt in 0..<3 {
+            try Task.checkCancellation()
+            do {
+                let (data,res)=try await session.data(for:req)
+                guard let r=res as? HTTPURLResponse else{throw LaunchError(message:"下载无响应")}
+                if r.statusCode==429 || r.statusCode>=500 {throw URLError(.badServerResponse)}
+                guard (200...299).contains(r.statusCode) else{throw LaunchError(message:"下载失败（HTTP \(r.statusCode)）：\(u.host ?? "")")};return data
+            }catch let error as LaunchError{throw error}
+            catch{if Task.isCancelled{throw CancellationError()};if attempt==2{throw error};try await Task.sleep(nanoseconds:UInt64(attempt+1)*1_000_000_000)}
+        }
+        throw LaunchError(message:"下载失败")
     }
     func object(_ url: String) async throws -> [String:Any] { try JSONSerialization.jsonObject(with:await fetch(url)) as? [String:Any] ?? [:] }
     func digest(_ d:Data)->String { Insecure.SHA1.hash(data:d).map{String(format:"%02x",$0)}.joined() }
@@ -133,8 +152,9 @@ actor Engine {
         let log=try folder("logs").appendingPathComponent("installer-\(kind).log");FileManager.default.createFile(atPath:log.path,contents:Data())
         let handle=try FileHandle(forWritingTo:log);defer{try? handle.close()}
         let task=Process();task.executableURL=runtime;task.currentDirectoryURL=root;task.arguments=["-Djava.awt.headless=true","-jar",installer.path,"--installClient",root.path];task.standardOutput=handle;task.standardError=handle
-        try task.run();task.waitUntilExit()
-        guard task.terminationStatus==0 else{throw LaunchError(message:"\(kind) 安装失败，详见 \(log.path)")}
+        running=task;defer{running=nil};let code=try await execute(task)
+        try Task.checkCancellation()
+        guard code==0 else{throw LaunchError(message:"\(kind) 安装失败，详见 \(log.path)")}
         let key=kind=="Forge" ? "\(game)-forge-\(build.replacingOccurrences(of:game+"-",with:""))":"neoforge-\(build)"
         let generated=root.appendingPathComponent("versions/\(key)/\(key).json")
         guard let result=try JSONSerialization.jsonObject(with:Data(contentsOf:generated)) as? [String:Any],result["mainClass"] is String else{throw LaunchError(message:"未找到安装器生成的启动配置")}
@@ -237,9 +257,10 @@ actor Engine {
         progress("整合包已导入。可选客户端模组默认跳过。请选择整合包后启动。")
         return id
     }
-    func launch(version:String,name:String,memory:Int,packID:String?=nil,progress:@escaping @Sendable (String)->Void) async throws {
+    func launch(version:String,name:String,memory:Int,packID:String?=nil,server:String?=nil,progress:@escaping @Sendable (String)->Void) async throws {
         if let p=running,p.isRunning {throw LaunchError(message:"游戏已在运行，请先关闭游戏")}
         guard name.range(of:"^[A-Za-z0-9_]{3,16}$",options:.regularExpression) != nil else {throw LaunchError(message:"用户名须为 3–16 位英文字母、数字或下划线")}
+        let joinArguments=try multiplayerArguments(version:version,address:server)
         progress("读取版本资料…")
         let manifest=try await object("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json")
         guard let entry=(manifest["versions"] as? [[String:Any]])?.first(where:{$0["id"] as? String==version}),let url=entry["url"] as? String else{throw LaunchError(message:"未找到游戏版本")}
@@ -302,7 +323,7 @@ actor Engine {
             try await group.waitForAll()
         }
         let uuid=Insecure.MD5.hash(data:Data("OfflinePlayer:\(name)".utf8)).map{String(format:"%02x",$0)}.joined()
-        let vars=["auth_player_name":name,"version_name":version,"game_directory":game.path,"assets_root":assets.path,"assets_index_name":indexID,"auth_uuid":uuid,"auth_access_token":"0","user_type":"legacy","version_type":"release","natives_directory":natives.path,"launcher_name":"GlassCraft","launcher_version":"0.2","classpath":(classpath+[jar.path]).joined(separator:":"),"library_directory":libs.path,"classpath_separator":":","clientid":"","auth_xuid":""]
+        let vars=["auth_player_name":name,"version_name":version,"game_directory":game.path,"assets_root":assets.path,"assets_index_name":indexID,"auth_uuid":uuid,"auth_access_token":"0","user_type":"legacy","version_type":"release","natives_directory":natives.path,"launcher_name":"GlassCraft","launcher_version":"0.5","classpath":(classpath+[jar.path]).joined(separator:":"),"library_directory":libs.path,"classpath_separator":":","clientid":"","auth_xuid":""]
         func expand(_ s:String)->String {var t=s;for (k,v) in vars {t=t.replacingOccurrences(of:"${\(k)}",with:v)};return t}
         func arguments(_ name:String)->[String] {
             let list=(meta["arguments"] as? [String:Any])?[name] as? [Any] ?? []
@@ -316,47 +337,10 @@ actor Engine {
         guard let main=meta["mainClass"] as? String else{throw LaunchError(message:"缺少启动入口")}
         let logs=try folder("logs").appendingPathComponent("latest.log");FileManager.default.createFile(atPath:logs.path,contents:Data())
         let handle=try FileHandle(forWritingTo:logs)
-        let p=Process();p.executableURL=runtime;p.currentDirectoryURL=game;p.arguments=["-Xmx\(memory)M"]+arguments("jvm")+[main]+arguments("game");p.standardOutput=handle;p.standardError=handle
-        try p.run();running=p;progress("游戏已启动。日志：\(logs.path)")
-        p.waitUntilExit();try? handle.close();running=nil
-        if p.terminationStatus != 0 {throw LaunchError(message:"游戏退出（\(p.terminationStatus)），请查看 logs/latest.log。旧版本的原生依赖可能不支持此 Mac 架构。")}
+        let p=Process();p.executableURL=runtime;p.currentDirectoryURL=game;p.arguments=["-Xmx\(memory)M"]+arguments("jvm")+[main]+arguments("game")+joinArguments;p.standardOutput=handle;p.standardError=handle
+        running=p;defer{running=nil;try? handle.close()};progress("正在启动游戏，日志：\(logs.path)")
+        let code=try await execute(p);try Task.checkCancellation()
+        if code != 0 {throw LaunchError(message:"游戏退出（\(p.terminationStatus)），请查看 logs/latest.log。旧版本的原生依赖可能不支持此 Mac 架构。")}
         progress("游戏已退出")
     }
-}
-@MainActor final class Model:ObservableObject {
-    @Published var versions=["1.21.1","1.20.1"]
-    @Published var selected="1.21.1"
-    @Published var name=UserDefaults.standard.string(forKey:"player") ?? "Player"
-    @Published var memory=4096.0
-    @Published var status="离线本地账号 · 先选择版本，再下载启动"
-    @Published var packs=[[String:String]]()
-    @Published var packID=""
-    @Published var loaderKind="原版"
-    @Published var loaderBuild=""
-    @Published var loaderBuilds=[String]()
-    @Published var loadingLoaders=false
-    @Published var busy=false
-    let engine=Engine()
-    func refresh() {Task{packs=(try? await engine.packList()) ?? [];do{let list=try await engine.versions();versions=list;if !list.contains(selected){selected=list.first ?? "1.21.1"}}catch{status="版本列表加载失败：\(error.localizedDescription)"}}}
-    func start(){busy=true;UserDefaults.standard.set(name,forKey:"player");Task{do{try await engine.launch(version:selected,name:name,memory:Int(memory),packID:packID.isEmpty ? nil:packID){message in Task{@MainActor in self.status=message}}}catch{status=error.localizedDescription};busy=false}}
-    func loadVersions(){let game=selected,kind=loaderKind;loadingLoaders=true;loaderBuilds=[];loaderBuild="";Task{do{let list=try await engine.loaderVersions(game:game,kind:kind);if selected==game && loaderKind==kind{loaderBuilds=list;loaderBuild=list.first ?? "";if kind != "原版" && list.isEmpty{status="此游戏版本没有对应的 \(kind) 版本"}}}catch{if selected==game && loaderKind==kind{status=error.localizedDescription}};if selected==game && loaderKind==kind{loadingLoaders=false}}}
-    func installLoader(){guard !loaderBuild.isEmpty else{return};busy=true;Task{do{let id=try await engine.createLoader(game:selected,kind:loaderKind,build:loaderBuild){message in Task{@MainActor in self.status=message}};packs=try await engine.packList();packID=id;status="加载器已安装，请点击下载并启动游戏"}catch{status=error.localizedDescription};busy=false}}
-    func importModpack(){let panel=NSOpenPanel();panel.allowsMultipleSelection=false;panel.canChooseDirectories=false;panel.allowedContentTypes=[UTType(filenameExtension:"mrpack") ?? .archive];guard panel.runModal() == .OK,let url=panel.url else{return};busy=true;Task{do{let id=try await engine.importPack(url){message in Task{@MainActor in self.status=message}};packs=try await engine.packList();packID=id;selected=packs.first(where:{$0["id"]==id})?["minecraft"] ?? selected}catch{status=error.localizedDescription};busy=false}}
-    func importFile(shader:Bool){let panel=NSOpenPanel();panel.allowsMultipleSelection=true;panel.canChooseDirectories=false;if panel.runModal() == .OK{Task{do{let target=try await engine.gameFolder(version:selected,packID:packID.isEmpty ? nil:packID).appendingPathComponent(shader ? "shaderpacks":"mods");try FileManager.default.createDirectory(at:target,withIntermediateDirectories:true);for file in panel.urls{guard file.pathExtension.lowercased()==(shader ? "zip":"jar") else{throw LaunchError(message:"请选择 \(shader ? "ZIP 光影包":"JAR 模组")")};let dest=target.appendingPathComponent(file.lastPathComponent);if FileManager.default.fileExists(atPath:dest.path){throw LaunchError(message:"已存在同名文件，请先在游戏目录处理")};try FileManager.default.copyItem(at:file,to:dest)};status="导入成功。模组需要另行安装匹配的加载器；当前自动启动仅支持原版。"}catch{status=error.localizedDescription}}}}
-}
-@main struct GlassCraftApp:App {
-    @StateObject var model=Model()
-    var body:some Scene{WindowGroup{VStack(alignment:.leading,spacing:20){
-        HStack{Text("GLASSCRAFT").font(.system(size:14,weight:.bold,design:.monospaced)).foregroundStyle(.green);Spacer();Text("macOS · 0.4 预览").foregroundStyle(.secondary)}
-        Text("把世界装进你的 Mac。").font(.system(size:34,weight:.bold))
-        Text("选择游戏版本与加载器，自动安装 Java，使用独立游戏目录。").foregroundStyle(.secondary)
-        HStack{TextField("本地用户名",text:$model.name).textFieldStyle(.roundedBorder).frame(width:180);Picker("游戏版本",selection:$model.selected){ForEach(model.versions,id:\.self){Text($0)}}}.disabled(model.busy || !model.packID.isEmpty)
-        HStack{Picker("启动配置",selection:$model.packID){Text("新建 / 原版").tag("");ForEach(model.packs,id:\.self){pack in Text(pack["name"] ?? "整合包").tag(pack["id"] ?? "")}}.onChange(of:model.packID){id in if let pack=model.packs.first(where:{$0["id"]==id}){model.selected=pack["minecraft"] ?? model.selected}};Button("导入整合包 .mrpack"){model.importModpack()}}.disabled(model.busy)
-        HStack{Picker("加载器",selection:$model.loaderKind){ForEach(["原版","Forge","NeoForge","Fabric","Quilt"],id:\.self){Text($0)}}.onChange(of:model.loaderKind){_ in model.loadVersions()};Picker(model.loadingLoaders ? "读取中…":"加载器版本",selection:$model.loaderBuild){Text("请选择").tag("");ForEach(model.loaderBuilds,id:\.self){Text($0)}};Button("安装加载器"){model.installLoader()}.disabled(model.loaderKind=="原版" || model.loaderBuild.isEmpty || model.loadingLoaders)}.disabled(model.busy || !model.packID.isEmpty).onChange(of:model.selected){_ in model.loadVersions()}
-        HStack{Text("内存 \(Int(model.memory)) MB");Slider(value:$model.memory,in:2048...8192,step:1024)}.disabled(model.busy)
-        HStack{Button(model.busy ? "准备 / 运行中…":"下载并启动游戏"){model.start()}.buttonStyle(.borderedProminent).tint(.green).disabled(model.busy);Button("资源中心"){NSWorkspace.shared.open(URL(string:"https://aarongame.com/glasscraft/#resources")!)}}
-        HStack{Button("导入模组 JAR"){model.importFile(shader:false)};Button("导入光影 ZIP"){model.importFile(shader:true)};Button("打开游戏文件夹"){Task{if let dir=try? await model.engine.gameFolder(version:model.selected,packID:model.packID.isEmpty ? nil:model.packID){NSWorkspace.shared.open(dir)}}}}.disabled(model.busy)
-        Text(model.status).font(.system(size:12,design:.monospaced)).textSelection(.enabled).frame(maxWidth:.infinity,alignment:.leading).padding().background(.quaternary,in:RoundedRectangle(cornerRadius:10))
-        Text("支持原版、Forge、NeoForge、Fabric、Quilt（1.19+），可导入对应 .mrpack；暂不支持 CurseForge ZIP。光影需兼容的加载器与渲染器。本地账号无法进入要求正版验证的服务器。首次下载可能需较长时间。").font(.caption).foregroundStyle(.secondary)
-    }.padding(30).frame(minWidth:700,minHeight:440).onAppear{model.refresh()}}.windowStyle(.titleBar)}
 }

@@ -1,3 +1,4 @@
+import Foundation
 @main struct PackTest {
 static func main() async throws {
 let root=URL(fileURLWithPath:"/private/tmp/glasscraft-pack-test-"+UUID().uuidString)
