@@ -1,3 +1,7 @@
+# GlassCraft — iOS / macOS
+
+macOS 原生开发预览：源码在 `macos/`，安装与限制见 [docs/MACOS.md](docs/MACOS.md)。iOS 分支仍未产出自己的可安装 IPA。
+
 # GlassCraft iOS — 开发预览
 
 基于 [AngelAuraMC/Amethyst-iOS](https://github.com/AngelAuraMC/Amethyst-iOS) 的 Minecraft Java Edition iOS 启动器分支，保留 GPL-3.0 许可、原作者版权与历史。原始说明见 README.upstream.md。非 Mojang / Microsoft 官方产品。
