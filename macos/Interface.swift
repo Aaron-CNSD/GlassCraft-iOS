@@ -60,7 +60,7 @@ struct LauncherView:View {
     var body:some View{HStack(spacing:0){
         VStack(alignment:.leading,spacing:26){Label("GlassCraft",systemImage:"cube.transparent.fill").font(.title2.bold()).padding(.top,20)
             VStack(spacing:7){ForEach(pages,id:\.0){page in Button{m.page=page.0}label:{Label(page.0,systemImage:page.1).frame(maxWidth:.infinity,alignment:.leading).padding(12).background(m.page==page.0 ? Color.cyan.opacity(0.22):Color.clear,in:RoundedRectangle(cornerRadius:12))}.buttonStyle(.plain)}}
-            Spacer();Text("0.5 · macOS").font(.caption.monospaced()).foregroundStyle(.secondary);Button("查看日志"){m.openFolder(logs:true)}.buttonStyle(.borderless)
+            Spacer();Text("0.6 · macOS").font(.caption.monospaced()).foregroundStyle(.secondary);Button("查看日志"){m.openFolder(logs:true)}.buttonStyle(.borderless)
         }.padding(22).frame(width:210).background(.ultraThinMaterial)
         VStack(alignment:.leading,spacing:18){
             HStack{VStack(alignment:.leading){Text(m.page).font(.largeTitle.bold());Text("你的世界，由你定义。").foregroundStyle(.secondary)};Spacer();Text(m.selected).font(.headline.monospaced()).padding(10).background(.thinMaterial,in:Capsule())}
@@ -87,7 +87,8 @@ struct LauncherView:View {
         ForEach(m.hits){hit in Button{m.select(hit)}label:{VStack(alignment:.leading,spacing:4){Text(hit.title).font(.headline);Text(hit.description).font(.caption).lineLimit(2).foregroundStyle(.secondary)}.frame(maxWidth:.infinity,alignment:.leading).padding(12).background(m.resource?.id==hit.id ? Color.blue.opacity(0.15):Color.primary.opacity(0.03),in:RoundedRectangle(cornerRadius:12))}.buttonStyle(.plain)}
         Text("普通模组的额外依赖需另行安装；光影需要兼容的渲染模组。点击下载不会打开外部浏览器。").font(.caption).foregroundStyle(.secondary)
     }}}
-    var multiplayer:some View{GlassPanel{VStack(alignment:.leading,spacing:18){Label("一起进入世界",systemImage:"person.2.fill").font(.title2.bold());TextField("服务器地址，例如 192.168.1.8:25565",text:$m.server).textFieldStyle(.roundedBorder);Button{m.start(join:true)}label:{Label("启动并加入服务器",systemImage:"network").padding(8)}.buttonStyle(.borderedProminent).disabled(m.busy || m.server.trimmingCharacters(in:.whitespaces).isEmpty)
+    var multiplayer:some View{VStack(spacing:16){RoomPanel(username:m.name,gameRunning:m.busy){address in if let address=address{m.server=address;m.start(join:true)}else{m.start()}};directMultiplayer}}
+    var directMultiplayer:some View{GlassPanel{VStack(alignment:.leading,spacing:18){Label("高级：服务器地址直连",systemImage:"person.2.fill").font(.title2.bold());TextField("服务器地址，例如 192.168.1.8:25565",text:$m.server).textFieldStyle(.roundedBorder);Button{m.start(join:true)}label:{Label("启动并加入服务器",systemImage:"network").padding(8)}.buttonStyle(.borderedProminent).disabled(m.busy || m.server.trimmingCharacters(in:.whitespaces).isEmpty)
         Text("使用本地用户名加入允许离线账号的服务器。局域网游戏：让房主在游戏内开放局域网，再填写房主 IP 和显示的端口。双方须匹配游戏、加载器与模组。").font(.callout)
         Text("此功能不创建服务器、不提供公网穿透；要求 Microsoft 验证的服务器仍无法加入。").font(.caption).foregroundStyle(.secondary)
     }}}
@@ -96,4 +97,8 @@ struct LauncherView:View {
         Text("本地皮肤不会同步给所有玩家；其他客户端需配置相同皮肤或皮肤服务才能看到。修改用户名后请重新应用。").font(.caption).foregroundStyle(.secondary)
     }}}
 }
+
+#if !GLASSCRAFT_TESTS
 @main struct GlassCraftApp:App{@StateObject var model=Model();var body:some Scene{WindowGroup{LauncherView(m:model)}.windowStyle(.titleBar)}}
+
+#endif

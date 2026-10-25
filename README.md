@@ -1,6 +1,6 @@
 # GlassCraft — iOS / macOS
 
-macOS 0.5 原生开发预览（原版 / Forge / NeoForge / Fabric / Quilt 选择与安装）：源码在 `macos/`，安装与限制见 [docs/MACOS.md](docs/MACOS.md)。iOS 分支仍未产出自己的可安装 IPA。
+macOS 0.6 原生开发预览（原版 / Forge / NeoForge / Fabric / Quilt 选择与安装）：源码在 `macos/`，安装与限制见 [docs/MACOS.md](docs/MACOS.md)。iOS 分支仍未产出自己的可安装 IPA。
 
 # GlassCraft iOS — 开发预览
 
