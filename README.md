@@ -1,107 +1,29 @@
-# Angel Aura Amethyst (iOS)
-[![Development build](https://github.com/AngelAuraMC/Amethyst-iOS/actions/workflows/development.yml/badge.svg?branch=main)](https://github.com/AngelAuraMC/Amethyst-iOS/actions/workflows/development.yml)
-[![Crowdin](https://badges.crowdin.net/angelauramc/localized.svg)](https://crowdin.com/project/angelauramc)
-[![Discord](https://img.shields.io/discord/724163890803638273.svg?label=&logo=discord&logoColor=ffffff&color=7389D8&labelColor=6A7EC2)](https://discord.gg/5ptqkyZxEy)
+# GlassCraft iOS — 开发预览
 
+基于 [AngelAuraMC/Amethyst-iOS](https://github.com/AngelAuraMC/Amethyst-iOS) 的 Minecraft Java Edition iOS 启动器分支，保留 GPL-3.0 许可、原作者版权与历史。原始说明见 README.upstream.md。非 Mojang / Microsoft 官方产品。
 
+官网与资源中心：https://aarongame.com/glasscraft/
 
-## Introduction
-Amethyst is a Minecraft: Java Edition launcher for Android, iOS, and iPadOS, based off of zhuowei's [Boardwalk](https://github.com/zhuowei/Boardwalk) project.
-* Supports most versions of Minecraft: Java Edition, from the very first beta to the newest snapshots.
-* Supports Forge, Fabric, OptiFine, and Quilt for you to customize the experience with supported mods.
-* Includes customizable on-screen controls, keyboard and mouse support, and game controller support.
-* Optimized for jailbroken and TrollStore devices to enable better capabilities.
-* Microsoft account and demo mode support for logging into Minecraft.
-* ...and much more!
+## 功能与状态
 
-This repository contains the code for our iOS and iPadOS port of Amethyst. Looking for [Android?](https://github.com/AngelAuraMC/Amethyst-Android)
+- 沿用上游原生引擎：游戏版本下载、Microsoft 登录、游戏启动、Java 运行时管理、模组与 Modrinth 整合包安装。
+- 新增 GlassCraft 显示名称、网页版模组 / 整合包 / 光影资源检索、版本清单与资源 API。
+- 光影在资源中心检索下载后需手动放入游戏目录 shaderpacks，并安装匹配的 Iris / OptiFine。并非所有光影、模组或整合包适用于 iOS 渲染器。
+- Java 必须是兼容 iOS 的运行时；不得用桌面 JDK 安装包替代。运行时下载/选择使用上游管理功能，并受运行时服务可用性影响。
+- 当前分支尚未完成原生构建和 iPhone 真机测试，**没有可验证的 GlassCraft IPA**。官网的下载入口是源码，不是安装包。勿把本版本当成已发布的可安装应用。
 
-## Getting started with Amethyst
-The [Amethyst wiki](https://wiki.angelauramc.dev/wiki/getting_started/INSTALL.html#ios) has extensive documentation on how to install, set up, and play! For those who wish to install quickly, here's the basics:
+## 安装与使用
 
-### Requirements
-At the minimum, you'll need one of the following devices on **iOS 14.0** and later:
-- iPhone 6s and later
-- iPad (5th generation) and later
-- iPad Air (2nd generation) and later
-- iPad mini (4th generation) and later
-- iPad Pro (all models)
-- iPod touch (7th generation)
+1. 使用具备 Java 版授权的 Microsoft 账号。不要把账号密码交给资源 API。
+2. 阅读[上游安装说明](https://wiki.angelauramc.dev/wiki/getting_started/INSTALL)，核对你的 iOS 与 JIT 支持情况。网页本身不能运行 Java 版游戏。
+3. 目前可使用上游正式发行版体验引擎；本分支需由开发者按上游构建步骤编译并用自己的证书侧载。不要直接把上游 IPA 当作 GlassCraft 安装包。
+4. 在原生启动器中登录、选择游戏版本和适配运行时，再下载启动。先验证原版，再安装匹配游戏版本与加载器的模组。
+5. 整合包使用启动器内的 Modrinth 安装入口；资源中心下载的 jar / zip 需按上游文件管理方式导入。光影需手动启用，复杂效果可能无法运行。
 
-However, we recommend one of the following devices on **iOS 14.0** and later:
-- iPhone XS and later, excluding iPhone XR and iPhone SE (2nd generation)
-- iPad (10th generation) and later
-- iPad Air (4th generation) and later
-- iPad mini (6th generation) and later
-- iPad Pro (all models, except for 9.7-inch)
+## 开发与 API
 
-Recommended devices provide a smoother and more enjoyable gameplay experience compared to other supported devices.
-- iOS 17.x and iOS 18.x is supported. However, a computer is required. For more information, please check out [the official wiki](https://wiki.angelauramc.dev/wiki/faq/ios/JIT.html#what-are-the-methods-to-enable-jit)
+保留上游 Makefile、Xcode 工程与构建依赖。先阅读上游说明并准备对应 iOS JRE、原生依赖与签名环境。上游 CI 依赖专用自托管 runner，本分支不保证 GitHub Actions 能自动出包。
 
-### Setting up to sideload
-Amethyst can be sideloaded in many ways. Our recommended solution is to install [TrollStore](https://github.com/opa334/TrollStore) if your iOS version supports it. Installing with TrollStore allows you to permanently sign the application, automatically enable JIT, and increase memory limits.
+API 文档见 docs/API.md；服务实现见 service/。API 仅公开资源元数据，不提供微软登录代理、盗版验证或远程启动 iPhone。
 
-If you cannot, [AltStore](https://altstore.io) and [SideStore](https://sidestore.io) are your next best options.
-- Signing services that do not use your UDID (and use distribution certificates) are not supported, as Amethyst requires capabilities they do not allow. However, if you do managed to gain access to a Development certificate, due to it having the necessary entitlement (being com.apple.security.get-task-allow) to attach a debugger to the running process (enabling JIT), you may use a Development certificate.
-  
-- Only install sideloading software and Amethyst from trusted sources. We are not responsible for any harm caused by using unofficial software.
-- Jailbreaks also benefit from permenant signing, autoJIT, and increased memory limits. However, we do not recommend them on devices intended for regular use.
-
-### Installing Amethyst
-#### Release build (TrollStore)
-1. Download an IPA of Amethyst in [Releases](https://github.com/AngelAuraMC/Amethyst-iOS/releases).
-2. Open the package in TrollStore using the share menu.
-
-#### Release build (AltStore/SideStore trusted source)
-These builds will be available soon, stay tuned.
-
-#### Nightly builds
-*These builds can contain game-breaking bugs. Use with caution.*
-1. Download an IPA build of Amethyst in the [Actions tab](https://github.com/AngelAuraMC/Amethyst-iOS/actions).
-2. Open the downloaded IPA in your sideloading app to install.
-
-#### Nightly builds (AltStore/SideStore trusted sources)
-These builds will be available soon, stay tuned.
-
-### Enabling JIT
-Amethyst makes use of **just-in-time compilation**, or JIT, to provide usable speeds for the end user. JIT is not supported on iOS without the application being debugged, so workarounds are required to enable it. You can use this chart to determine the best solution for you and your setup.
-| Application         | AltStore | SideStore | StikDebug | TrollStore | Jitterbug          | Jailbroken |
-|---------------------|----------|-----------|-----------|------------|--------------------|------------|
-| Requires ext-device | Yes      | Yes (#)   | Yes (#)   | No         | If VPN unavailable | No         |
-| Requires Wi-Fi      | Yes      | Yes (#)   | Yes (#)   | No         | Yes                | No         |
-| Auto enabled        | Yes (*)  | No        | Yes       | Yes        | No                 | Yes        |
-
-(*) AltServer running on the local network is required.
-(#) Only the first time.
-
-## Contributors
-Amethyst is amazing, and surprisingly stable, and it wouldn't be this way without the commmunity that helped and contribute to the project! Some notable names:
-
-@crystall1nedev - Project manager, iOS port developer  
-@khanhduytran0 - iOS port developer  
-@artdeell  
-@Mathius-Boulay  
-@zhuowei  
-@jkcoxson   
-@Diatrus 
-
-## Third party components and their licenses
-- [Caciocavallo](https://github.com/PojavLauncherTeam/caciocavallo): [GNU GPLv2 License](https://github.com/PojavLauncherTeam/caciocavallo/blob/master/LICENSE).
-- [jsr305](https://code.google.com/p/jsr-305): [3-Clause BSD License](http://opensource.org/licenses/BSD-3-Clause).
-- [Boardwalk](https://github.com/zhuowei/Boardwalk): [Apache 2.0 License](https://github.com/zhuowei/Boardwalk/blob/master/LICENSE) 
-- [GL4ES](https://github.com/ptitSeb/gl4es) by @lunixbochs @ptitSeb: [MIT License](https://github.com/ptitSeb/gl4es/blob/master/LICENSE).
-- [Mesa 3D Graphics Library](https://gitlab.freedesktop.org/mesa/mesa): [MIT License](https://docs.mesa3d.org/license.html).
-- [MetalANGLE](https://github.com/khanhduytran0/metalangle) by @kakashidinho and ANGLE team: [BSD 2.0 License](https://github.com/kakashidinho/metalangle/blob/master/LICENSE).
-- [MoltenVK](https://github.com/KhronosGroup/MoltenVK): [Apache 2.0 License](https://github.com/KhronosGroup/MoltenVK/blob/master/LICENSE).
-- [openal-soft](https://github.com/kcat/openal-soft): [LGPLv2 License](https://github.com/kcat/openal-soft/blob/master/COPYING).
-- [Azul Zulu JDK](https://www.azul.com/downloads/?package=jdk): [GNU GPLv2 License](https://openjdk.java.net/legal/gplv2+ce.html).
-- [LWJGL3](https://github.com/PojavLauncherTeam/lwjgl3): [BSD-3 License](https://github.com/LWJGL/lwjgl3/blob/master/LICENSE.md).
-- [LWJGLX](https://github.com/PojavLauncherTeam/lwjglx) (LWJGL2 API compatibility layer for LWJGL3): unknown license.
-- [DBNumberedSlider](https://github.com/khanhduytran0/DBNumberedSlider): [Apache 2.0 License](https://github.com/immago/DBNumberedSlider/blob/master/LICENSE)
-- [fishhook](https://github.com/khanhduytran0/fishhook): [BSD-3 License](https://github.com/facebook/fishhook/blob/main/LICENSE).
-- [shaderc](https://github.com/khanhduytran0/shaderc) (used by Vulkan rendering mods): [Apache 2.0 License](https://github.com/google/shaderc/blob/main/LICENSE).
-- [NRFileManager](https://github.com/mozilla-mobile/firefox-ios/tree/b2f89ac40835c5988a1a3eb642982544e00f0f90/ThirdParty/NRFileManager): [MPL-2.0 License](https://www.mozilla.org/en-US/MPL/2.0)
-- [AltKit](https://github.com/rileytestut/AltKit)
-- [UnzipKit](https://github.com/abbeycode/UnzipKit): [BSD-2 License](https://github.com/abbeycode/UnzipKit/blob/master/LICENSE).
-- [DyldDeNeuralyzer](https://github.com/xpn/DyldDeNeuralyzer): bypasses Library Validation for loading external runtime
-- Thanks to [MCHeads](https://mc-heads.net) for providing Minecraft avatars.
+教程视频是带中文字幕的安装流程说明，不是 GlassCraft 真机运行录像。Bilibili 发布文案见 docs/BILIBILI.md。
