@@ -18,3 +18,11 @@
 ## 开发
 
 运行 `bash macos/build.sh`。下载接口为 Mojang manifest/resources 与 Adoptium v3；开源运行时的许可由其下载包保留。此版本未实现下载取消、Microsoft 登录或自动更新。
+
+## 0.3：导入整合包
+
+点击「导入整合包 .mrpack」，选择从 Modrinth 导出的文件，等待下载校验完成；在「启动配置」中选择该包，点击「下载并启动游戏」。导入后会自动选中整合包和对应游戏版本。可在运行游戏前更改用户名与内存；若用户名被禁用，先切回原版修改再选回整合包。
+
+支持 Minecraft 1.19+ 的原版、Fabric、Quilt `.mrpack`，自动获取对应加载器配置和依赖。包内 overrides 与 client-overrides 按顺序覆盖，客户端标记为 optional / unsupported 的文件默认跳过。失败导入不会登记启动配置；每次导入创建新实例，不覆盖旧存档。
+
+不支持 Forge、NeoForge、CurseForge ZIP。下载地址限 Modrinth / GitHub / GitLab 官方格式允许的主机；使用其他源的包会报告失败。导入与加载器依赖下载经过自动化测试，尚未完成游戏进入世界的真机验证。

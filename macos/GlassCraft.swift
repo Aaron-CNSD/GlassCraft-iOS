@@ -1,5 +1,6 @@
 import SwiftUI
 import CryptoKit
+import UniformTypeIdentifiers
 
 struct LaunchError: LocalizedError { var message: String; var errorDescription: String? { message } }
 actor Engine {
@@ -78,18 +79,120 @@ actor Engine {
             return parts.count>1 && parts[0]==1 && parts[1]>=19 ? id:nil
         }
     }
-    func launch(version:String,name:String,memory:Int,progress:@escaping @Sendable (String)->Void) async throws {
+    func safePath(_ path:String) throws -> String {
+        let parts=path.split(separator:"/",omittingEmptySubsequences:false)
+        guard !path.isEmpty,!path.hasPrefix("/"),!path.contains("\\"),!path.contains(":"),!path.contains("\0"),!parts.contains(".."),!parts.contains(".") else {throw LaunchError(message:"整合包包含不安全路径")}
+        return path
+    }
+    func capture(_ args:[String]) throws -> String {
+        let p=Process(),pipe=Pipe();p.executableURL=URL(fileURLWithPath:"/usr/bin/zipinfo");p.arguments=args;p.standardOutput=pipe;p.standardError=FileHandle.nullDevice
+        try p.run();let data=pipe.fileHandleForReading.readDataToEndOfFile();p.waitUntilExit()
+        guard p.terminationStatus==0,let result=String(data:data,encoding:.utf8) else{throw LaunchError(message:"无法读取整合包 ZIP")};return result
+    }
+    func packList() throws -> [[String:String]] {
+        let dir=try folder("packs")
+        return try FileManager.default.contentsOfDirectory(at:dir,includingPropertiesForKeys:nil).filter{$0.pathExtension=="json"}.compactMap{url in
+            guard let data=try? Data(contentsOf:url),let obj=try? JSONSerialization.jsonObject(with:data) as? [String:Any],let id=obj["id"] as? String,let name=obj["name"] as? String,let mc=obj["minecraft"] as? String else{return nil}
+            return ["id":id,"name":name,"minecraft":mc]
+        }.sorted{($0["name"] ?? "")<($1["name"] ?? "")}
+    }
+    func gameFolder(version:String,packID:String?) throws -> URL {
+        if let id=packID {guard UUID(uuidString:id) != nil else{throw LaunchError(message:"无效整合包配置")};return try folder("instances/packs/\(id)")}
+        return try folder("instances/\(version)")
+    }
+    func importPack(_ archive:URL,progress:@escaping @Sendable(String)->Void) async throws -> String {
+        let fm=FileManager.default
+        guard archive.pathExtension.lowercased()=="mrpack",(try archive.resourceValues(forKeys:[.fileSizeKey]).fileSize ?? 0)<536870912 else{throw LaunchError(message:"请选择小于 512 MB 的 .mrpack 文件；不支持 CurseForge ZIP")}
+        progress("检查整合包…")
+        let listing=try capture(["-1",archive.path]).split(separator:"\n").map(String.init)
+        guard listing.count<30000,Set(listing).count==listing.count else{throw LaunchError(message:"整合包条目过多或重复")}
+        for name in listing {_ = try safePath(name)}
+        let details=try capture(["-l",archive.path]);var total:Int64=0
+        for line in details.split(separator:"\n") {
+            if line.hasPrefix("l"){throw LaunchError(message:"整合包不允许符号链接")}
+            if line.hasPrefix("-") || line.hasPrefix("d") {let fields=line.split(whereSeparator:{$0==" " || $0=="\t"});if fields.count>3,let size=Int64(fields[3]){total += size}}
+        }
+        guard total<2147483648 else{throw LaunchError(message:"整合包解压大小超过 2 GB")}
+        let id=UUID().uuidString,stage=try folder("staging/\(id)"),game=stage.appendingPathComponent("game")
+        defer{try? fm.removeItem(at:stage)}
+        let unpack=stage.appendingPathComponent("archive");try fm.createDirectory(at:unpack,withIntermediateDirectories:true)
+        try run("/usr/bin/ditto",["-xk",archive.path,unpack.path])
+        let indexData=try Data(contentsOf:unpack.appendingPathComponent("modrinth.index.json"))
+        guard let index=try JSONSerialization.jsonObject(with:indexData) as? [String:Any],index["formatVersion"] as? Int==1,index["game"] as? String=="minecraft",let deps=index["dependencies"] as? [String:String],let mc=deps["minecraft"],let files=index["files"] as? [[String:Any]] else{throw LaunchError(message:"不支持的 mrpack 清单")}
+        let parts=mc.split(separator:".").compactMap{Int($0)}
+        guard parts.count>=2,parts[0]==1,parts[1]>=19 else{throw LaunchError(message:"目前整合包仅支持 Minecraft 1.19+")}
+        guard Set(deps.keys).isSubset(of:["minecraft","fabric-loader","quilt-loader"]),!(deps["fabric-loader"] != nil && deps["quilt-loader"] != nil) else{throw LaunchError(message:"目前支持 Fabric、Quilt 或原版 mrpack；暂不支持 Forge/NeoForge")}
+        var profile:[String:Any]=[:]
+        if let loader=deps["fabric-loader"] ?? deps["quilt-loader"] {
+            guard loader.range(of:"^[A-Za-z0-9._+-]+$",options:.regularExpression) != nil else{throw LaunchError(message:"无效加载器版本")}
+            progress("准备整合包加载器…")
+            let base=deps["fabric-loader"] != nil ? "https://meta.fabricmc.net/v2":"https://meta.quiltmc.org/v3"
+            profile=try await object("\(base)/versions/loader/\(mc)/\(loader)/profile/json")
+            guard profile["mainClass"] is String,profile["libraries"] is [[String:Any]] else{throw LaunchError(message:"加载器配置无效")}
+        }
+        try fm.createDirectory(at:game,withIntermediateDirectories:true)
+        guard files.count<30000 else{throw LaunchError(message:"整合包文件过多")}
+        var seen=Set<String>()
+        for (i,file) in files.enumerated() {
+            let client=(file["env"] as? [String:String])?["client"] ?? "required"
+            if client=="unsupported" || client=="optional" {continue}
+            guard client=="required",let path=file["path"] as? String,let hashes=file["hashes"] as? [String:String],let urls=file["downloads"] as? [String],!urls.isEmpty else{throw LaunchError(message:"资源条目无效")}
+            _=try safePath(path);guard seen.insert(path).inserted else{throw LaunchError(message:"资源路径重复")}
+            progress("下载整合包文件 \(i+1)/\(files.count)…")
+            var verified:Data?
+            for link in urls {
+                guard let u=URL(string:link),u.scheme=="https",let host=u.host,["cdn.modrinth.com","github.com","raw.githubusercontent.com","gitlab.com"].contains(host) else{continue}
+                do{let data=try await fetch(link)
+                    if let size=file["fileSize"] as? Int,data.count != size {continue}
+                    if let sha=hashes["sha512"],SHA512.hash(data:data).map({String(format:"%02x",$0)}).joined()==sha {verified=data;break}
+                    if hashes["sha512"]==nil,let sha=hashes["sha1"],digest(data)==sha {verified=data;break}
+                }catch{continue}
+            }
+            guard let data=verified else{throw LaunchError(message:"下载或校验失败：\(path)")}
+            let dest=game.appendingPathComponent(path);try fm.createDirectory(at:dest.deletingLastPathComponent(),withIntermediateDirectories:true);try data.write(to:dest,options:.atomic)
+        }
+        for folder in ["overrides","client-overrides"] {
+            let source=unpack.appendingPathComponent(folder)
+            if let items=fm.enumerator(at:source,includingPropertiesForKeys:[.isDirectoryKey,.isSymbolicLinkKey]) {
+                while let item=items.nextObject() as? URL {
+                    let values=try item.resourceValues(forKeys:[.isDirectoryKey,.isSymbolicLinkKey]);guard values.isSymbolicLink != true else{throw LaunchError(message:"不允许符号链接")}
+                    let rel=String(item.path.dropFirst(source.path.count+1));_=try safePath(rel);let dest=game.appendingPathComponent(rel)
+                    if values.isDirectory==true {try fm.createDirectory(at:dest,withIntermediateDirectories:true)}
+                    else{try fm.createDirectory(at:dest.deletingLastPathComponent(),withIntermediateDirectories:true);if fm.fileExists(atPath:dest.path){try fm.removeItem(at:dest)};try fm.copyItem(at:item,to:dest)}
+                }
+            }
+        }
+        let final=try gameFolder(version:mc,packID:id);try fm.removeItem(at:final);try fm.moveItem(at:game,to:final)
+        do {let record:[String:Any]=["id":id,"name":index["name"] as? String ?? archive.deletingPathExtension().lastPathComponent,"minecraft":mc,"loaderProfile":profile]
+            let dest=try folder("packs").appendingPathComponent("\(id).json");try JSONSerialization.data(withJSONObject:record).write(to:dest,options:.atomic)
+        }catch{try? fm.removeItem(at:final);throw error}
+        progress("整合包已导入。可选客户端模组默认跳过。请选择整合包后启动。")
+        return id
+    }
+    func launch(version:String,name:String,memory:Int,packID:String?=nil,progress:@escaping @Sendable (String)->Void) async throws {
         if let p=running,p.isRunning {throw LaunchError(message:"游戏已在运行，请先关闭游戏")}
         guard name.range(of:"^[A-Za-z0-9_]{3,16}$",options:.regularExpression) != nil else {throw LaunchError(message:"用户名须为 3–16 位英文字母、数字或下划线")}
         progress("读取版本资料…")
         let manifest=try await object("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json")
         guard let entry=(manifest["versions"] as? [[String:Any]])?.first(where:{$0["id"] as? String==version}),let url=entry["url"] as? String else{throw LaunchError(message:"未找到游戏版本")}
-        let meta=try await object(url)
+        var meta=try await object(url)
+        if let id=packID {
+            guard UUID(uuidString:id) != nil else{throw LaunchError(message:"无效整合包配置")}
+            let data=try Data(contentsOf:root.appendingPathComponent("packs/\(id).json"))
+            guard let record=try JSONSerialization.jsonObject(with:data) as? [String:Any],record["minecraft"] as? String==version else{throw LaunchError(message:"整合包游戏版本不匹配")}
+            let profile=record["loaderProfile"] as? [String:Any] ?? [:]
+            if let main=profile["mainClass"] as? String {meta["mainClass"]=main}
+            let libs=(profile["libraries"] as? [[String:Any]] ?? [])+(meta["libraries"] as? [[String:Any]] ?? [])
+            var names=Set<String>();meta["libraries"]=libs.filter {names.insert($0["name"] as? String ?? UUID().uuidString).inserted}
+            var args=meta["arguments"] as? [String:Any] ?? [:]
+            for key in ["jvm","game"] {args[key]=(args[key] as? [Any] ?? [])+((profile["arguments"] as? [String:Any])?[key] as? [Any] ?? [])}
+            meta["arguments"]=args
+        }
         let major=(meta["javaVersion"] as? [String:Any])?["majorVersion"] as? Int ?? 17
         progress("准备 Java \(major)，首次下载需要时间…")
         let runtime=try await java(major)
-        let libs=try folder("libraries"),assets=try folder("assets"),game=try folder("instances/\(version)"),natives=try folder("natives/\(version)")
-        _=try folder("instances/\(version)/mods");_=try folder("instances/\(version)/shaderpacks")
+        let libs=try folder("libraries"),assets=try folder("assets"),game=try gameFolder(version:version,packID:packID),natives=try folder("natives/\(version)")
+
         guard let client=(meta["downloads"] as? [String:Any])?["client"] as? [String:Any] else {throw LaunchError(message:"缺少游戏文件")}
         let jar=try folder("versions/\(version)").appendingPathComponent("\(version).jar")
         progress("下载并校验游戏文件…");try await download(client,to:jar)
@@ -97,7 +200,15 @@ actor Engine {
         let libraries=meta["libraries"] as? [[String:Any]] ?? []
         for (i,lib) in libraries.enumerated() where allowed(lib) {
             progress("准备依赖 \(i+1)/\(libraries.count)…")
-            if let downloads=lib["downloads"] as? [String:Any] {
+            var downloads=lib["downloads"] as? [String:Any]
+            if downloads==nil,let name=lib["name"] as? String {
+                let c=name.split(separator:":").map(String.init)
+                guard c.count==3 else{throw LaunchError(message:"不支持的加载器依赖")}
+                let path=c[0].replacingOccurrences(of:".",with:"/")+"/"+c[1]+"/"+c[2]+"/"+c[1]+"-"+c[2]+".jar"
+                let base=lib["url"] as? String ?? "https://libraries.minecraft.net/"
+                downloads=["artifact":["path":path,"url":base+(base.hasSuffix("/") ? "":"/")+path]]
+            }
+            if let downloads=downloads {
                 if let a=downloads["artifact"] as? [String:Any],let path=a["path"] as? String {
                     let dest=libs.appendingPathComponent(path);try await download(a,to:dest);classpath.append(dest.path)
                 }
@@ -150,23 +261,27 @@ actor Engine {
     @Published var name=UserDefaults.standard.string(forKey:"player") ?? "Player"
     @Published var memory=4096.0
     @Published var status="离线本地账号 · 先选择版本，再下载启动"
+    @Published var packs=[[String:String]]()
+    @Published var packID=""
     @Published var busy=false
     let engine=Engine()
-    func refresh() {Task{do{let list=try await engine.versions();versions=list;if !list.contains(selected){selected=list.first ?? "1.21.1"}}catch{status="版本列表加载失败：\(error.localizedDescription)"}}}
-    func start(){busy=true;UserDefaults.standard.set(name,forKey:"player");Task{do{try await engine.launch(version:selected,name:name,memory:Int(memory)){message in Task{@MainActor in self.status=message}}}catch{status=error.localizedDescription};busy=false}}
-    func importFile(shader:Bool){let panel=NSOpenPanel();panel.allowsMultipleSelection=true;panel.canChooseDirectories=false;if panel.runModal() == .OK{Task{do{let target=try await engine.folder("instances/\(selected)/\(shader ? "shaderpacks":"mods")");for file in panel.urls{guard file.pathExtension.lowercased()==(shader ? "zip":"jar") else{throw LaunchError(message:"请选择 \(shader ? "ZIP 光影包":"JAR 模组")")};let dest=target.appendingPathComponent(file.lastPathComponent);if FileManager.default.fileExists(atPath:dest.path){throw LaunchError(message:"已存在同名文件，请先在游戏目录处理")};try FileManager.default.copyItem(at:file,to:dest)};status="导入成功。模组需要另行安装匹配的加载器；当前自动启动仅支持原版。"}catch{status=error.localizedDescription}}}}
+    func refresh() {Task{packs=(try? await engine.packList()) ?? [];do{let list=try await engine.versions();versions=list;if !list.contains(selected){selected=list.first ?? "1.21.1"}}catch{status="版本列表加载失败：\(error.localizedDescription)"}}}
+    func start(){busy=true;UserDefaults.standard.set(name,forKey:"player");Task{do{try await engine.launch(version:selected,name:name,memory:Int(memory),packID:packID.isEmpty ? nil:packID){message in Task{@MainActor in self.status=message}}}catch{status=error.localizedDescription};busy=false}}
+    func importModpack(){let panel=NSOpenPanel();panel.allowsMultipleSelection=false;panel.canChooseDirectories=false;panel.allowedContentTypes=[UTType(filenameExtension:"mrpack") ?? .archive];guard panel.runModal() == .OK,let url=panel.url else{return};busy=true;Task{do{let id=try await engine.importPack(url){message in Task{@MainActor in self.status=message}};packs=try await engine.packList();packID=id;selected=packs.first(where:{$0["id"]==id})?["minecraft"] ?? selected}catch{status=error.localizedDescription};busy=false}}
+    func importFile(shader:Bool){let panel=NSOpenPanel();panel.allowsMultipleSelection=true;panel.canChooseDirectories=false;if panel.runModal() == .OK{Task{do{let target=try await engine.gameFolder(version:selected,packID:packID.isEmpty ? nil:packID).appendingPathComponent(shader ? "shaderpacks":"mods");try FileManager.default.createDirectory(at:target,withIntermediateDirectories:true);for file in panel.urls{guard file.pathExtension.lowercased()==(shader ? "zip":"jar") else{throw LaunchError(message:"请选择 \(shader ? "ZIP 光影包":"JAR 模组")")};let dest=target.appendingPathComponent(file.lastPathComponent);if FileManager.default.fileExists(atPath:dest.path){throw LaunchError(message:"已存在同名文件，请先在游戏目录处理")};try FileManager.default.copyItem(at:file,to:dest)};status="导入成功。模组需要另行安装匹配的加载器；当前自动启动仅支持原版。"}catch{status=error.localizedDescription}}}}
 }
 @main struct GlassCraftApp:App {
     @StateObject var model=Model()
     var body:some Scene{WindowGroup{VStack(alignment:.leading,spacing:20){
-        HStack{Text("GLASSCRAFT").font(.system(size:14,weight:.bold,design:.monospaced)).foregroundStyle(.green);Spacer();Text("macOS · 0.2 预览").foregroundStyle(.secondary)}
+        HStack{Text("GLASSCRAFT").font(.system(size:14,weight:.bold,design:.monospaced)).foregroundStyle(.green);Spacer();Text("macOS · 0.3 预览").foregroundStyle(.secondary)}
         Text("把世界装进你的 Mac。").font(.system(size:34,weight:.bold))
         Text("原版下载、自动安装 Java、独立游戏目录与本地账号。").foregroundStyle(.secondary)
-        HStack{TextField("本地用户名",text:$model.name).textFieldStyle(.roundedBorder).frame(width:180);Picker("游戏版本",selection:$model.selected){ForEach(model.versions,id:\.self){Text($0)}}}.disabled(model.busy)
+        HStack{TextField("本地用户名",text:$model.name).textFieldStyle(.roundedBorder).frame(width:180);Picker("游戏版本",selection:$model.selected){ForEach(model.versions,id:\.self){Text($0)}}}.disabled(model.busy || !model.packID.isEmpty)
+        HStack{Picker("启动配置",selection:$model.packID){Text("原版").tag("");ForEach(model.packs,id:\.self){pack in Text(pack["name"] ?? "整合包").tag(pack["id"] ?? "")}}.onChange(of:model.packID){id in if let pack=model.packs.first(where:{$0["id"]==id}){model.selected=pack["minecraft"] ?? model.selected}};Button("导入整合包 .mrpack"){model.importModpack()}}.disabled(model.busy)
         HStack{Text("内存 \(Int(model.memory)) MB");Slider(value:$model.memory,in:2048...8192,step:1024)}.disabled(model.busy)
         HStack{Button(model.busy ? "准备 / 运行中…":"下载并启动游戏"){model.start()}.buttonStyle(.borderedProminent).tint(.green).disabled(model.busy);Button("资源中心"){NSWorkspace.shared.open(URL(string:"https://aarongame.com/glasscraft/#resources")!)}}
-        HStack{Button("导入模组 JAR"){model.importFile(shader:false)};Button("导入光影 ZIP"){model.importFile(shader:true)};Button("打开游戏文件夹"){Task{if let dir=try? await model.engine.folder("instances/\(model.selected)"){NSWorkspace.shared.open(dir)}}}}.disabled(model.busy)
+        HStack{Button("导入模组 JAR"){model.importFile(shader:false)};Button("导入光影 ZIP"){model.importFile(shader:true)};Button("打开游戏文件夹"){Task{if let dir=try? await model.engine.gameFolder(version:model.selected,packID:model.packID.isEmpty ? nil:model.packID){NSWorkspace.shared.open(dir)}}}}.disabled(model.busy)
         Text(model.status).font(.system(size:12,design:.monospaced)).textSelection(.enabled).frame(maxWidth:.infinity,alignment:.leading).padding().background(.quaternary,in:RoundedRectangle(cornerRadius:10))
-        Text("当前自动启动仅支持原版 1.19+。模组加载器与整合包自动安装尚未完成。光影需兼容的加载器与渲染器。本地账号无法进入要求正版验证的服务器。首次下载可能需较长时间。").font(.caption).foregroundStyle(.secondary)
+        Text("支持原版及 Fabric / Quilt .mrpack 整合包（1.19+）；暂不支持 Forge、NeoForge 或 CurseForge ZIP。光影需兼容的加载器与渲染器。本地账号无法进入要求正版验证的服务器。首次下载可能需较长时间。").font(.caption).foregroundStyle(.secondary)
     }.padding(30).frame(minWidth:700,minHeight:440).onAppear{model.refresh()}}.windowStyle(.titleBar)}
 }
