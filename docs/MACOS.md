@@ -26,3 +26,11 @@
 支持 Minecraft 1.19+ 的原版、Fabric、Quilt `.mrpack`，自动获取对应加载器配置和依赖。包内 overrides 与 client-overrides 按顺序覆盖，客户端标记为 optional / unsupported 的文件默认跳过。失败导入不会登记启动配置；每次导入创建新实例，不覆盖旧存档。
 
 不支持 Forge、NeoForge、CurseForge ZIP。下载地址限 Modrinth / GitHub / GitLab 官方格式允许的主机；使用其他源的包会报告失败。导入与加载器依赖下载经过自动化测试，尚未完成游戏进入世界的真机验证。
+
+## 0.4：选择加载器
+
+在「启动配置」选择「新建 / 原版」，选择 Minecraft 版本，再在「加载器」中选择原版、Forge、NeoForge、Fabric 或 Quilt。选择对应的加载器版本后点击「安装加载器」。完成后会创建并自动选中独立配置，再点击「下载并启动游戏」。原版无需安装加载器。
+
+Forge / NeoForge 从官方 Maven 下载并校验官方安装器，运行客户端安装流程以生成补丁与启动配置。Fabric / Quilt 使用官方 metadata 服务。Minecraft 版本范围仍为 1.19+；没有对应发行版时会提示。NeoForge 1.20.1 暂不提供，1.20.2+ 按对应版本筛选。
+
+`.mrpack` 的 Forge / NeoForge 依赖现在也会调用相同安装流程。CurseForge ZIP 仍未适配。所有加载器安装均可能因上游网络或不兼容的处理器失败，错误信息会指向 logs/installer-Forge.log 或 installer-NeoForge.log。完整游戏进入世界仍未验证，不保证任意整合包都可运行。
